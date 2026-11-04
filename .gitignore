@@ -1,0 +1,30 @@
+# Rust
+/daemon/target/
+**/*.rs.bk
+
+# Gradle / Kotlin
+.gradle/
+**/build/
+!**/src/**/build/
+local.properties
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editores
+.idea/
+*.iml
+.vscode/
+*.swp
+*~
+
+# Sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Varios
+*.log
+dist/

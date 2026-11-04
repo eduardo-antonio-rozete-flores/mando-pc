@@ -1,0 +1,712 @@
+============================================================
+PROYECTO "MANDO PC"
+Documento de idea, alcance y arquitectura
+Fecha: 2026-11-02
+============================================================
+
+Este archivo guarda el analisis completo de la idea original y
+define el objetivo vigente, ya recortado a un caso de uso concreto:
+Fedora + Android por cable USB, con multijugador local.
+
+
+============================================================
+0. OBJETIVO VIGENTE (LEER PRIMERO)
+============================================================
+
+Convertir uno o varios telefonos Android en mandos de videojuegos
+para una PC con Fedora Linux, conectados por cable USB, con baja
+latencia y con un unico layout de controles tipo Xbox.
+
+Multijugador local: de 2 a 4 telefonos conectados al mismo tiempo
+a la laptop, cada uno como un jugador independiente (Jugador 1 a
+Jugador 4), usando un hub USB alimentado.
+
+Alcance cerrado:
+  - Cliente: Android. Motorola Edge 30 base como equipo de
+    referencia. Otros Android (8.0 / API 26 en adelante) se
+    aceptan como clientes secundarios.
+  - Host: Linux, exclusivamente Fedora.
+  - Conexion: cable USB (USB-C del telefono a un hub USB
+    alimentado, y el hub a la laptop).
+  - Layout: uno solo, tipo Xbox, igual para todos los jugadores.
+  - Jugadores simultaneos: 2 a 4.
+  - Perfiles de mando tipo PlayStation/Nintendo: CANCELADOS por
+    ahora. Solo se conserva la idea de "perfil" como estructura
+    interna, pero se entrega un unico layout.
+
+Fuera de alcance (explicito):
+  - Windows 11.
+  - macOS.
+  - iPhone / iOS.
+  - Conexion inalambrica (Wi-Fi / Bluetooth).
+  - Emulacion exacta de DualShock / Switch Pro.
+  - Emulacion de teclado/raton.
+  - Mas de 4 jugadores simultaneos.
+  - Dongle de hardware.
+
+
+============================================================
+1. IDEA ORIGINAL (contexto historico)
+============================================================
+
+La idea inicial era una aplicacion Android que simulara ser un
+mando y que se pudiera usar para jugar en PC, con posibilidad de
+cambiar la configuracion a un mando tipo Xbox, PlayStation o
+Nintendo, entre otros, y que se conectara por cable USB para no
+tener latencia. Tambien se queria que funcionara en iPhone y en
+varios sistemas operativos de laptop (Linux, Windows, macOS).
+
+Esa version amplia queda archivada. El analisis de abajo se
+conserva porque muchas conclusiones siguen siendo validas para el
+alcance recortado.
+
+
+============================================================
+2. ANALISIS GUARDADO (version multiplataforma)
+============================================================
+
+2.1 Las tres capas del producto
+-------------------------------
+No es "una app que es un mando". Son tres piezas separadas:
+
+  1) App Android: captura el toque, el giroscopio y los botones;
+     dibuja el layout; aplica el perfil.
+  2) Transporte: el canal fisico (USB, Bluetooth, red) que lleva
+     los datos.
+  3) Daemon en la PC: convierte ese flujo en un dispositivo de
+     entrada virtual que el juego ve como un mando real.
+
+Separar estas capas es lo que permite crecer despues sin rehacer
+nada. Mezclarlas (por ejemplo, que la app hable directo con el
+driver de la PC) es un callejon sin salida.
+
+2.2 Definicion de "perfil"
+--------------------------
+Un perfil no es solo el dibujo en pantalla. Contiene cuatro cosas
+independientes:
+  - Layout: donde estan los botones en la pantalla.
+  - Mapeo: que toque produce que boton/eje logico.
+  - Dispositivo emulado: Xbox, DualShock, Switch Pro, etc.
+  - Extras: vibracion, giroscopio, touchpad, gatillos, macros.
+
+Asi se puede tener "layout de Xbox" con "dispositivo emulado
+DualShock", que es lo que normalmente se pide.
+
+2.3 La decision que define todo: quien es el dispositivo USB
+------------------------------------------------------------
+Un cable USB siempre tiene un host y un dispositivo. La PC es el
+host. La pregunta es como se presenta el telefono:
+
+  A) Telefono como HID real (USB Gadget / f_hid)
+     - Requiere root y kernel con el modulo HID gadget.
+     - La PC no necesita software: plug-and-play.
+     - Latencia aprox. 1-4 ms. Es el ideal.
+     - En Android de fabrica NO es posible sin root.
+
+  B) AOA (Android Open Accessory)
+     - Sin root. El telefono es "accesorio"; la PC abre un canal
+       bulk.
+     - En Linux es trivial con libusb + regla udev.
+     - Latencia aprox. 2-6 ms.
+
+  C) Tunel ADB
+     - Sin root. Facil de implementar y de depurar.
+     - Obliga a activar depuracion USB y autorizar la PC.
+     - Latencia aprox. 5-15 ms por el salto TCP.
+
+  D) USB tethering (RNDIS/NCM) + UDP
+     - Sin root. Un solo codigo sirve para cable y Wi-Fi.
+     - En Fedora los drivers cdc_ncm/cdc_ether son nativos.
+     - Latencia aprox. 3-8 ms.
+
+  E) Bluetooth HID (BluetoothHidDevice)
+     - Sin root y sin instalar nada en la PC.
+     - No es cable; latencia aprox. 5-15 ms.
+
+Conclusion clave: sin root, el telefono no puede ser un HID USB
+real. El "cero software en la PC y cero latencia" solo existe con
+root o con hardware intermedio.
+
+2.4 Que se necesita en cada lado (version amplia)
+-------------------------------------------------
+Android:
+  - Kotlin, MotionEvent con requestUnbufferedDispatch (evita el
+    batching de un frame), lectura de eventos historicos, hilo
+    dedicado con prioridad alta, servicio en primer plano y
+    exclusion de optimizacion de bateria.
+  - UsbManager para AOA; BluetoothHidDevice (API 28+) para
+    Bluetooth; NsdManager para red; SensorManager para
+    giroscopio; VibratorManager para vibracion.
+  - El enemigo es el fabricante: cada OEM se comporta distinto.
+
+Windows 11 (CANCELADO):
+  - No existe forma de crear un HID desde espacio de usuario.
+  - ViGEmBus (Xbox 360 / DualShock 4) o vJoy.
+  - Emular Switch Pro exige driver propio firmado (caro).
+
+Fedora (VIGENTE):
+  - /dev/uhid permite crear un HID virtual con descriptor
+    arbitrario y enviar reportes crudos.
+  - /dev/uinput es la via simple para un gamepad generico.
+  - Cuidado con SELinux y con Flatpak (el sandbox bloquea
+    uinput/uhid). Mejor RPM/COPR + regla udev + servicio systemd.
+
+2.5 Latencia: numeros honestos
+------------------------------
+El enlace USB puede ser de ~1 ms, pero el dedo en el vidrio no.
+Un digitador tactil anade tipicamente 20-50 ms y no hay feedback
+tactil. Presupuesto realista:
+  - Captura tactil: 20-50 ms (factor dominante).
+  - Transporte: 1-15 ms segun la ruta.
+  - Daemon + dispositivo virtual: 1-3 ms.
+  - Latencia del juego y del monitor: variable.
+Por eso el discurso correcto es "baja latencia por cable", no
+"cero latencia". Conviene incluir un modo de medicion de latencia
+(ping/pong con marca de tiempo) que muestre el numero real.
+
+2.6 iPhone y multiplataforma (CANCELADO)
+----------------------------------------
+iOS no puede actuar como dispositivo HID por USB. No hay API de
+gadget ni AOA como dispositivo. Solo red, dongle o MFi. Esto
+confirmaba que la abstraccion de transporte era obligatoria.
+Queda archivado.
+
+2.7 Perspectivas que casi nadie considera
+-----------------------------------------
+  - Emulacion DS/3DS/Wii U: el telefono puede ser la segunda
+    pantalla tactil. Caso de uso asesino.
+  - Giroscopio: el IMU del telefono suele ser mejor y mas rapido
+    que el de un mando comercial. Gyro-aim en emuladores.
+  - Pantalla completa como touchpad: coordenadas absolutas.
+  - Multijugador local gratis: varios telefonos, varios mandos.
+  - Accesibilidad: layouts personalizables, modo una mano.
+  - Dongle USB (RP2040/ESP32-S3): resuelve iPhone y cualquier SO.
+  - Protocolo abierto: permite clientes de la comunidad.
+  - Steam Deck: corre Linux; el daemon funcionaria casi tal cual.
+  - Anti-cheat: dispositivos virtuales pueden ser detectados.
+  - Ergonomia: sin feedback tactil el mando se siente "flotante";
+    un grip con botones fisicos puede valer mas que 5 ms.
+
+2.8 Riesgos (version amplia)
+----------------------------
+  1. Sin root, Android no es un HID USB real.
+  2. iPhone por cable es imposible sin MFi/dongle.
+  3. Windows exige driver firmado para emular dispositivos.
+  4. El tacto siempre sera mas lento que un boton fisico.
+  5. Fragmentacion de fabricantes y versiones de Android.
+  6. Coste de soporte: drivers, ADB, tethering, firewalls.
+  7. Marcas registradas (Xbox/PlayStation/Nintendo).
+  8. El publico competitivo no es el objetivo; si casual,
+     cooperativo, retro, emulacion, accesibilidad y cloud.
+
+2.9 Ruta por fases (historica)
+------------------------------
+  Fase 0: protocolo binario + abstraccion de transporte.
+  Fase 1: Android + Windows/Fedora por ADB o tethering; ViGEm en
+          Windows y uinput en Linux; perfiles basicos; Xbox 360.
+  Fase 2: Bluetooth HID como modo universal.
+  Fase 3: root + HID gadget para latencia minima.
+  Fase 4: emulacion exacta DS4/Switch Pro con uhid.
+  Fase 5: iPhone por Wi-Fi y dongle.
+Las fases 1 (parte Windows), 2, 4 y 5 quedan canceladas. La 3
+sigue siendo opcional segun se pueda rootear el equipo.
+
+
+============================================================
+3. NUEVO ALCANCE DEFINIDO
+============================================================
+
+3.1 Dentro de alcance
+---------------------
+  - App Android para Motorola Edge 30 base (referencia) y para
+    otros Android 8.0+ como clientes secundarios.
+  - Daemon para Fedora Linux.
+  - Conexion por cable USB mediante hub alimentado.
+  - Multijugador local de 2 a 4 telefonos simultaneos.
+  - Un unico layout de controles (tipo Xbox).
+  - Perfiles internos con estructura de datos, pero una sola
+    configuracion entregada.
+  - Medicion de latencia visible por jugador.
+  - Vibracion basica (si el tiempo alcanza).
+  - Empaquetado simple para Fedora (RPM o COPR).
+
+3.2 Fuera de alcance
+--------------------
+  - Windows, macOS, iOS.
+  - Wi-Fi y Bluetooth.
+  - Emulacion exacta de DualShock / Switch Pro.
+  - Teclado/raton virtual.
+  - Mas de 4 jugadores simultaneos.
+  - Hardware adicional (dongle, grip).
+
+3.3 Dispositivo objetivo: Motorola Edge 30 base
+-----------------------------------------------
+Datos relevantes para el proyecto:
+  - Modelo: Motorola Edge 30 (2022), familia XT2203.
+  - Pantalla: pOLED ~6.55" a 144 Hz. Alta tasa de refresco, buena
+    para reducir latencia de dibujo y de captura.
+  - Chip: Snapdragon 778G+ 5G. Suficiente de sobra.
+  - USB: Type-C, USB 2.0. Mas que suficiente para HID (un paquete
+    de 64 bytes a 1000 Hz son ~64 KB/s).
+  - Android de lanzamiento: 12; actualizable a 13/14.
+  - Bateria ~4020 mAh. Se calienta y se drena rapido si se juega
+    con la pantalla encendida y cargando a la vez.
+  - Sin jack de 3.5 mm.
+  - Punto critico: para la ruta de HID real (f_hid) hace falta
+    root, y eso depende de si el bootloader es desbloqueable en
+    esta unidad. Hay que verificarlo antes de prometer esa ruta.
+
+3.4 Host objetivo: Fedora
+-------------------------
+  - Daemon nativo (Rust, C++ o Go) con acceso a /dev/uinput
+    (y opcionalmente /dev/uhid).
+  - Regla udev para permisos de uinput/uhid.
+  - Servicio systemd de usuario.
+  - SELinux: crear politica o etiquetar el binario.
+  - Evitar Flatpak para el daemon.
+
+3.5 Un solo layout: tipo Xbox
+-----------------------------
+Se elige Xbox porque:
+  - Es el estandar de facto en PC y en Steam/Proton.
+  - XInput esta soportado por casi todos los juegos.
+  - El mapeo con uinput es directo.
+  - Evita trabajo de descriptores HID y de glifos alternativos.
+Distribucion propuesta en pantalla (modo horizontal):
+  - Stick izquierdo y stick derecho.
+  - Cruceta a la izquierda.
+  - Botones ABXY a la derecha.
+  - Gatillos LB/RB y LT/RT en los hombros.
+  - Start, Back y Guide al centro.
+  - Boton extra opcional para captura/menu.
+  - Zonas muertas configurables en los sticks.
+  - Vibracion al presionar (opcional).
+
+
+============================================================
+4. ARQUITECTURA PROPUESTA PARA ESTE ALCANCE
+============================================================
+
+4.1 Transporte recomendado
+--------------------------
+Orden de preferencia para Fedora + Edge 30:
+
+  Opcion 1: AOA por USB (sin root, latencia baja).
+    - La PC abre el accesorio con libusb.
+    - En Fedora no hace falta driver adicional, solo regla udev.
+    - Es la mejor relacion latencia/esfuerzo sin root.
+
+  Opcion 2: Tethering USB (RNDIS/NCM) + UDP.
+    - Alternativa si AOA da problemas con el modelo.
+    - En Fedora los drivers son nativos.
+    - Permite reutilizar el codigo para un futuro modo Wi-Fi.
+
+  Opcion 3: ADB.
+    - Solo para desarrollo y pruebas.
+    - No se recomienda para el usuario final por la depuracion
+      USB y las autorizaciones.
+
+  Opcion 4 (opcional, si hay root): HID gadget real.
+    - Cero software en la PC y latencia minima.
+    - Depende de desbloquear el bootloader.
+
+4.2 Protocolo
+-------------
+  - Paquete binario de tamano fijo (por ejemplo 64 bytes).
+  - Contenido: numero de secuencia, timestamp, mascara de botones,
+    ejes de sticks, gatillos, giroscopio/acelerometro, touch,
+    bateria y banderas.
+  - Sin retransmision: el estado mas reciente gana.
+  - Sincronizacion de reloj con ping/pong para medir latencia.
+  - Un solo sentido para entrada; un canal aparte para vibracion.
+
+4.3 Daemon en Fedora
+--------------------
+  - Hilo de lectura de alta prioridad.
+  - Backend de salida: uinput (gamepad generico).
+  - Opcional: uhid para un descriptor mas fino.
+  - Perfil cargado desde un archivo de configuracion.
+  - Registro de latencia y estado en un log simple.
+
+4.4 App Android
+---------------
+  - Servicio en primer plano con notificacion persistente.
+  - Wakelock y exclusion de optimizacion de bateria.
+  - Captura tactil sin batching.
+  - Hilo de envio dedicado.
+  - Reconexion automatica al detectar el cable.
+  - Modo de prueba que muestra paquetes enviados y latencia.
+
+4.5 Multijugador local: varios telefonos a la vez
+-------------------------------------------------
+Topologia:
+  - Hub USB ALIMENTADO (con fuente externa). Un hub pasivo no
+    entrega corriente suficiente y los telefonos pueden
+    desconectarse o no cargar.
+  - El hub va a la laptop; cada telefono va a un puerto del hub.
+  - Se recomienda hub USB 3.0 con puertos USB-A y adaptadores
+    USB-C, o un hub USB-C con varios puertos.
+
+Como se distinguen los telefonos:
+  - Todos enumeran con el mismo VID/PID de AOA (VID 0x18D1).
+  - libusb los separa por bus/puerto fisico.
+  - La app envia en el handshake un UUID persistente (guardado en
+    preferencias). El daemon mapea UUID -> jugador. Esto es mas
+    robusto que el puerto, porque sobrevive a reconexiones.
+
+Slots de jugador:
+  - El daemon crea 4 gamepads virtuales persistentes al arrancar,
+    aunque no haya telefonos conectados. Asi el orden de jugadores
+    no cambia cuando alguien se desconecta.
+  - Politicas de asignacion:
+      1. Automatica: primer slot libre.
+      2. Manual: la app pide "Jugador N".
+      3. Persistente: el UUID recuerda su slot en la config.
+  - Al desconectar, el slot pasa a estado neutro (todos los ejes
+    al centro, botones sueltos) pero NO se destruye.
+  - Al reconectar, se reasigna al mismo slot si el UUID coincide.
+
+Ancho de banda:
+  - 4 telefonos x 64 bytes x 1000 Hz = 256 KB/s.
+  - Trivial para USB 2.0 (480 Mbps). No hay cuello de botella.
+
+Reglas del sistema:
+  - Regla udev para VID 0x18D1 (PIDs de accesorio 0x2D00/0x2D01)
+    para que el daemon acceda sin root.
+  - El daemon debe tolerar que un telefono desaparezca y vuelva.
+
+Sincronizacion:
+  - No se necesita sincronizar relojes entre telefonos. Cada uno
+    lleva su propio timestamp; solo se usa para medir latencia.
+  - Los estados son independientes: el estado mas reciente de cada
+    telefono gana para su propio slot.
+
+4.6 Handshake de identificacion
+-------------------------------
+  - HELLO (telefono -> PC): version de protocolo, UUID, modelo,
+    slot solicitado (opcional), capabilities.
+  - HELLO_ACK (PC -> telefono): slot asignado, estado, version.
+  - Cada paquete de entrada lleva session_id y numero de
+    secuencia; el daemon descarta paquetes viejos o de sesiones
+    anteriores.
+
+
+============================================================
+5. LATENCIA ESPERADA EN ESTE ALCANCE
+============================================================
+
+  - Captura tactil del Edge 30 (144 Hz): 15-40 ms.
+  - Transporte AOA por USB: 2-6 ms.
+  - Daemon + uinput: 1-3 ms.
+  - Total percibido: aproximadamente 20-50 ms.
+  - Objetivo tecnico del enlace (telefono a juego): menor a 10 ms.
+  - La latencia tactil es el piso; no se puede eliminar por
+    software. Se puede mitigar con feedback de vibracion y con
+    zonas de boton grandes.
+  - La latencia es POR JUGADOR e independiente. Agregar telefonos
+    no aumenta la latencia de los demas: cada uno tiene su propio
+    canal y su propio gamepad virtual. El hub anade una demora
+    despreciable.
+
+
+============================================================
+6. RIESGOS ESPECIFICOS DE ESTE ALCANCE
+============================================================
+
+  1. AOA puede fallar o ser inestable en el Edge 30; hay que
+     probarlo temprano con un prototipo minimo.
+  2. El bootloader del Edge 30 puede no ser desbloqueable; en ese
+     caso la ruta de HID real queda descartada.
+  3. SELinux en Fedora puede bloquear uinput; hay que resolverlo
+     desde el inicio.
+  4. La app puede ser cerrada por el sistema; hay que blindarla
+     con servicio en primer plano y wakelock.
+  5. Calor y bateria al cargar y jugar al mismo tiempo.
+  6. Windows queda fuera, asi que no hay que gastar tiempo en
+     ViGEm ni en drivers firmados.
+  7. Un solo layout reduce el trabajo, pero tambien reduce la
+     diferenciacion; se compensa con calidad de ergonomia.
+  8. Multijugador: el hub debe ser alimentado; uno pasivo provoca
+     desconexiones y carga insuficiente.
+  9. Multijugador: hay que probar con 2, 3 y 4 telefonos reales;
+     no basta con simulaciones.
+ 10. Multijugador: el orden de jugadores debe ser estable; si se
+     destruyen los gamepads al desconectar, los indices cambian y
+     el jugador 2 puede pasar a ser el 1.
+ 11. Multijugador: algunos telefonos no cargan y transfieren datos
+     a la vez de forma estable; hay que probarlo con el Edge 30 y
+     con los telefonos secundarios.
+ 12. Multijugador: la app debe soportar Android 8.0+ para aceptar
+     telefonos secundarios; esto amplia la matriz de pruebas.
+
+
+============================================================
+7. ROADMAP PROPUESTO
+============================================================
+
+  Hito 0: prototipo de transporte de UN telefono.
+    - App minima que envie un paquete por AOA.
+    - Daemon minimo en Fedora que lo reciba e imprima.
+    - Validar que el Edge 30 funcione por AOA.
+
+  Hito 1: gamepad virtual de UN telefono.
+    - uinput creando un mando tipo Xbox.
+    - Mapeo de botones y sticks.
+    - Probar en un juego de Steam/Proton y en un emulador.
+
+  Hito 2: multijugador (2 telefonos).
+    - Handshake con UUID y asignacion de slot.
+    - Dos gamepads virtuales persistentes.
+    - Probar con hub alimentado y dos telefonos reales.
+
+  Hito 3: layout unico.
+    - Interfaz tactil tipo Xbox en horizontal.
+    - Zonas muertas, tamanos y vibracion.
+    - Persistencia de ajustes.
+
+  Hito 4: robustez y 4 jugadores.
+    - Reconexion, servicio en primer plano, wakelock.
+    - Slots estables al desconectar y reconectar.
+    - Regla udev y servicio systemd.
+    - Medicion de latencia visible por jugador.
+    - Probar con 3 y 4 telefonos.
+
+  Hito 5: empaquetado.
+    - RPM o COPR para Fedora.
+    - Instalador/documentacion para el usuario.
+
+  Hito 6 (opcional): HID gadget con root.
+    - Solo si el bootloader es desbloqueable.
+    - Elimina el daemon y baja la latencia al minimo.
+    - En multijugador, cada telefono seria un HID independiente.
+
+
+============================================================
+8. DECISIONES PENDIENTES
+============================================================
+
+  - Confirmar si el Edge 30 permite desbloquear el bootloader.
+  - Elegir AOA vs tethering USB tras una prueba real.
+  - Definir el lenguaje del daemon (Rust, C++ o Go).
+  - Definir el formato de configuracion del perfil.
+  - Decidir si la vibracion entra en la primera version.
+  - Definir el nombre del proyecto y la licencia.
+  - Definir cuantos jugadores maximos: 2, 3 o 4 (se asume 4).
+  - Elegir el modelo de hub USB alimentado.
+  - Definir que telefonos secundarios se aceptan (Android 8.0+).
+  - Definir la politica de slots por defecto (automatica o
+    persistente por UUID).
+
+
+============================================================
+9. DIVISION DEL TRABAJO (WBS)
+============================================================
+
+9.0 Regla de oro
+----------------
+Primero se congela el CONTRATO: el protocolo binario y las
+interfaces entre capas. Una vez congelado, Android y daemon se
+pueden desarrollar en paralelo contra mocks, sin esperarse.
+
+Cada paquete de trabajo (WP) debe tener:
+  - Un README propio con su contrato de entrada/salida.
+  - Un mock o simulador para no depender del otro lado.
+  - Un criterio de aceptacion medible.
+
+9.1 Roles sugeridos (se pueden agrupar si hay menos gente)
+----------------------------------------------------------
+  Persona 1: arquitectura, protocolo, daemon core, slots.
+  Persona 2: Android UI y captura tactil.
+  Persona 3: Android transporte AOA y servicio.
+  Persona 4: daemon USB host y backend uinput.
+  Persona 5: QA multijugador, pruebas de hardware, empaquetado.
+
+9.2 Paquetes de trabajo
+-----------------------
+
+WP-A1  Especificacion del protocolo v1
+  Objetivo: documento congelado con handshake, formato de
+    paquetes, IDs, errores y versionado.
+  Que se usa: documento Markdown, tablas de bytes, vectores de
+    prueba en hexadecimal, script de validacion.
+  Entregable: PROTOCOL.md v1 + vectores de prueba + script que
+    valide un paquete.
+  Depende de: nada.
+  Aceptacion: dos implementaciones independientes (Android y
+    daemon) interoperan usando los mismos vectores.
+
+WP-A2  Contratos de interfaz
+  Objetivo: definir las interfaces entre capas:
+    - Transporte: open / close / read / write / eventos.
+    - Backend de gamepad: create_slot / update / destroy.
+    - UI: eventos logicos (boton, eje, trigger).
+  Que se usa: interfaces en el lenguaje elegido + mocks.
+  Entregable: interfaces + mocks funcionales.
+  Depende de: A1.
+  Aceptacion: Android y daemon pueden trabajar sin el otro lado.
+
+WP-A3  Repositorio y CI
+  Objetivo: estructura y automatizacion.
+  Que se usa: Git, GitHub/GitLab, Gradle para Android, cargo
+    para el daemon, pruebas de protocolo.
+  Entregable: monorepo con /android, /daemon, /protocol,
+    /docs, /tools; CI que compila y prueba.
+  Depende de: A1.
+  Aceptacion: un push compila Android y daemon y corre tests.
+
+WP-B1  UI y captura tactil (Android)
+  Objetivo: layout Xbox en horizontal, multitouch, zonas
+    muertas, captura sin batching.
+  Que se usa: Kotlin, View custom con Canvas (o Compose),
+    MotionEvent, requestUnbufferedDispatch, eventos historicos,
+    buffer reutilizable.
+  Entregable: APK que dibuja el layout y emite eventos logicos.
+  Depende de: A2.
+  Aceptacion: 10 dedos simultaneos; menos de 5 ms de
+    procesamiento por evento; sin asignaciones en el hot path.
+
+WP-B2  Transporte AOA (Android)
+  Objetivo: handshake AOA, envio bulk, reconexion.
+  Que se usa: UsbManager, UsbAccessory, UsbDeviceConnection,
+    bulkTransfer, UsbConstants, hilo dedicado.
+  Entregable: modulo de transporte que implementa la interfaz
+    de A2.
+  Depende de: A1, A2.
+  Aceptacion: 1000 Hz sostenidos; sin GC en el hilo de envio;
+    reconexion automatica al reconectar el cable.
+
+WP-B3  Servicio, identidad y slots (Android)
+  Objetivo: foreground service, wakelock, UUID persistente,
+    seleccion de jugador, HELLO.
+  Que se usa: ForegroundService, PowerManager.WakeLock,
+    DataStore/SharedPreferences, UUID propio, notificacion
+    persistente.
+  Entregable: app completa que se conecta y solicita slot.
+  Depende de: B2, A1.
+  Aceptacion: sobrevive 1 h en primer plano; se reconecta solo;
+    no duplica el UUID.
+
+WP-C1  Transporte AOA host (Fedora)
+  Objetivo: enumerar N accesorios, handshake, lectura bulk,
+    hot-plug.
+  Que se usa: Rust con rusb (o C con libusb), udev, hilos o
+    tokio por dispositivo.
+  Entregable: daemon que lista dispositivos y emite estados.
+  Depende de: A1, A2.
+  Aceptacion: 4 dispositivos simultaneos; detecta conexion y
+    desconexion en menos de 1 s; no pierde paquetes.
+
+WP-C2  Backend uinput multigamepad
+  Objetivo: crear 4 gamepads Xbox persistentes y actualizarlos.
+  Que se usa: crate uinput (o /dev/uinput en C), ioctls
+    UI_SET_*, BUS_USB, VID/PID de Xbox 360.
+  Entregable: modulo que crea, actualiza y destruye slots.
+  Depende de: A2.
+  Aceptacion: evtest/jstest ven 4 mandos; ejes y botones
+    correctos; sin drift.
+
+WP-C3  Orquestador de slots
+  Objetivo: mapear UUID a slot, aplicar politica, dejar el slot
+    en estado neutro al desconectar.
+  Que se usa: archivo de configuracion TOML/YAML, maquina de
+    estados.
+  Entregable: modulo de asignacion + comando de estado.
+  Depende de: C1, C2, A1.
+  Aceptacion: reconectar al jugador 2 lo devuelve al slot 2;
+    nunca hay dos jugadores en el mismo slot.
+
+WP-C4  Latencia y logging
+  Objetivo: medir RTT por jugador y registrar eventos.
+  Que se usa: reloj monotono, ping/pong, tracing/log, journal
+    de systemd.
+  Entregable: comando "mando status" con latencia por jugador.
+  Depende de: C1, C3.
+  Aceptacion: latencia visible y estable; log util para
+    diagnostico.
+
+WP-D1  Arnes de pruebas sin telefonos
+  Objetivo: simulador de N telefonos que habla el protocolo por
+    un transporte falso.
+  Que se usa: Rust o Python, sockets locales, vectores de A1.
+  Entregable: simulador con 4 jugadores.
+  Depende de: A1, A2.
+  Aceptacion: permite probar C1-C4 y B1-B3 sin hardware.
+
+WP-D2  Pruebas con hardware real
+  Objetivo: 2 a 4 telefonos + hub alimentado; matriz de casos.
+  Que se usa: hub alimentado, cables, Edge 30 y secundarios,
+    evtest, jstest, Steam/Proton, RetroArch o Dolphin.
+  Entregable: reporte de pruebas y lista de bugs.
+  Depende de: B3, C3, D1.
+  Aceptacion: 4 jugadores jugando 30 min sin desconexiones;
+    latencia de enlace menor a 10 ms.
+
+WP-D3  Estres y reconexion
+  Objetivo: conectar y desconectar en caliente, 1 h de uso,
+    comportamiento termico.
+  Que se usa: script de ciclos, monitoreo de memoria y CPU.
+  Entregable: reporte de estabilidad.
+  Depende de: D2.
+  Aceptacion: slots estables, sin fugas de memoria, sin
+    cuelgues.
+
+WP-E1  Empaquetado Fedora
+  Objetivo: instalacion limpia.
+  Que se usa: rpmbuild/fedora-packager, COPR, regla udev,
+    systemd user service, semodule para SELinux.
+  Entregable: RPM o COPR + regla udev + unidad systemd.
+  Depende de: C3, C4.
+  Aceptacion: dnf install y funciona sin pasos manuales, salvo
+    permisos documentados.
+
+WP-E2  Documentacion
+  Objetivo: manual de usuario y guia de desarrollo.
+  Que se usa: Markdown en /docs, capturas, troubleshooting.
+  Entregable: guia de instalacion, uso, desarrollo y problemas
+    frecuentes (SELinux, hub, ADB, permisos).
+  Depende de: E1.
+  Aceptacion: una persona ajena instala y juega siguiendo la
+    guia.
+
+9.3 Matriz de paralelizacion
+----------------------------
+  WP     Depende de        Puede iniciar tras   Rol
+  A1     -                inmediato            Persona 1
+  A2     A1               A1                   Persona 1
+  A3     A1               A1                   Persona 1/5
+  B1     A2               A2                   Persona 2
+  B2     A1, A2           A2                   Persona 3
+  B3     B2, A1           B2                   Persona 3
+  C1     A1, A2           A2                   Persona 4
+  C2     A2               A2                   Persona 4
+  C3     C1, C2, A1       C1 y C2              Persona 1
+  C4     C1, C3           C3                   Persona 4
+  D1     A1, A2           A2                   Persona 5
+  D2     B3, C3, D1       B3 y C3              Persona 5
+  D3     D2               D2                   Persona 5
+  E1     C3, C4           C4                   Persona 5
+  E2     E1               E1                   Persona 5
+
+  Camino critico:
+    A1 -> A2 -> (B2 y C1 y C2 en paralelo) -> B3 -> C3 ->
+    D2 -> D3 -> E1 -> E2.
+
+9.4 Hitos con entregables
+-------------------------
+  M0 (contrato): A1 + A2 + A3.
+  M1 (un jugador): B2 + C1 + C2 + D1; demo con 1 telefono.
+  M2 (dos jugadores): B3 + C3; demo con 2 telefonos.
+  M3 (producto): B1 + C4 + D2 + D3.
+  M4 (entrega): E1 + E2.
+
+9.5 Definicion de terminado global
+----------------------------------
+  - 4 jugadores, 30 minutos, sin desconexiones.
+  - Latencia medida y mostrada por jugador.
+  - Slots estables al reconectar.
+  - Instalacion en Fedora limpia siguiendo la guia.
+  - Documentacion de troubleshooting.
+
+============================================================
+FIN DEL DOCUMENTO
+============================================================

@@ -1,0 +1,326 @@
+============================================================
+PROYECTO "MANDO PC"
+Plan de trabajo por partes (WBS)
+Fecha: 2026-11-02
+Documento base: OBJETIVO_MANDO_PC.txt
+============================================================
+
+Regla de oro: primero se congela el CONTRATO (protocolo e
+interfaces). Despues cada parte se trabaja en paralelo contra
+mocks, sin esperar a las demas.
+
+Cada parte debe entregar:
+  - Su documento o modulo con README.
+  - Un mock o simulador para no depender de otras partes.
+  - Un criterio de aceptacion medible.
+
+
+============================================================
+1. LISTA DE PARTES Y ESTADO
+============================================================
+
+[HECHO]     A1  Especificacion del protocolo v1
+[HECHO]     A2  Contratos de interfaz entre capas
+[HECHO]     A3  Repositorio y CI
+[HECHO]     B1  UI y captura tactil (Android)
+[HECHO]     B2  Transporte AOA (Android)
+[HECHO]     B3  Servicio, identidad y slots (Android)
+[SIGUIENTE] C1  Transporte AOA host (Fedora)
+[PENDIENTE] C2  Backend uinput multigamepad
+[PENDIENTE] C3  Orquestador de slots
+[PENDIENTE] C4  Latencia y logging
+[PENDIENTE] D1  Arnes de pruebas sin telefonos
+[PENDIENTE] D2  Pruebas con hardware real
+[PENDIENTE] D3  Estres y reconexion
+[PENDIENTE] E1  Empaquetado Fedora
+[PENDIENTE] E2  Documentacion
+
+
+============================================================
+2. ORDEN Y DEPENDENCIAS
+============================================================
+
+A1 -> A2 -> A3
+             |
+             +--> B1 (solo necesita A2)
+             +--> B2 -> B3
+             +--> C1 --+
+             +--> C2 --+--> C3 -> C4
+             +--> D1 (simulador, solo necesita A1 y A2)
+
+B3 + C3 + D1 -> D2 -> D3 -> E1 -> E2
+
+Camino critico:
+  A1 -> A2 -> B2/C1/C2 -> B3 -> C3 -> D2 -> D3 -> E1 -> E2
+
+
+============================================================
+3. PARTE COMPLETADA: A1
+============================================================
+
+Nombre: Especificacion del protocolo v1.
+
+Objetivo:
+  Congelar el formato de los paquetes que viajan entre el telefono
+  y la PC, para que Android y el daemon se puedan programar por
+  separado.
+
+Que se usa:
+  - Documento Markdown (PROTOCOL.md).
+  - Tablas de offsets y tipos.
+  - Vectores de prueba en hexadecimal.
+  - Validador en Python (tools/protocol_v1.py).
+
+Entregables:
+  - docs/PROTOCOL.md
+  - tools/protocol_v1.py (constructor, parser y autoprueba)
+
+Criterio de aceptacion:
+  - Dos implementaciones independientes pueden intercambiar
+    HELLO, HELLO_ACK, INPUT, PING y PONG usando los vectores.
+  - El validador acepta los vectores y rechaza magic/version
+    incorrectos.
+
+
+============================================================
+4. PARTE COMPLETADA: A2
+============================================================
+
+Nombre: Contratos de interfaz entre capas.
+
+Objetivo:
+  Definir las fronteras entre las tres capas para que nadie
+  dependa del codigo de otro:
+
+  1) Transporte (telefono <-> PC):
+       open(), close(), read(), write(), on_disconnect().
+       Debe poder implementarse con AOA, y mas adelante con
+       tethering o ADB sin cambiar las capas de arriba.
+
+  2) Backend de gamepad (daemon):
+       create_slot(n), update(slot, state), destroy(slot).
+       Debe poder implementarse con uinput y mas adelante con
+       uhid sin cambiar el orquestador.
+
+  3) Fuente de entrada (app Android):
+       emite eventos logicos (boton, eje, trigger, touch) que el
+       layout convierte en un estado de mando.
+
+Como trabajar en A2 (paso a paso):
+  a) Leer docs/PROTOCOL.md y listar los tipos de mensaje y los
+     campos de estado que deben cruzar cada interfaz.
+  b) Escribir las interfaces en el lenguaje elegido (Rust para
+     el daemon, Kotlin para Android) sin implementarlas.
+  c) Escribir mocks:
+       - MockTransport: genera INPUT sintetico a 1000 Hz.
+       - MockGamepad: imprime el estado en vez de usar uinput.
+       - MockInputSource: produce eventos sin pantalla tactil.
+  d) Escribir pruebas de contrato: el mock de transporte debe
+     poder alimentar al orquestador y al backend de gamepad.
+  e) Publicar el contrato en docs/INTERFACES.md con un ejemplo
+     de uso por cada interfaz.
+  f) Congelar: a partir de aqui, cambios de interfaz requieren
+     version nueva y aviso a todos.
+
+Que se usa en A2:
+  - Rust traits (daemon) y Kotlin interfaces (Android).
+  - Mocks en el mismo lenguaje.
+  - Pruebas unitarias de contrato.
+  - Documento docs/INTERFACES.md.
+
+Entregables de A2:
+  - docs/INTERFACES.md
+  - Interfaces declaradas (sin implementacion).
+  - Tres mocks funcionales.
+  - Pruebas de contrato que pasan.
+
+Criterio de aceptacion de A2:
+  - B1, B2, C1, C2 y D1 pueden empezar sin esperar a las demas.
+  - Cambiar AOA por otro transporte no obliga a tocar C3 ni B3.
+  - Cambiar uinput por uhid no obliga a tocar C1 ni C3.
+
+Estado de A2 (2026-11-02):
+  - docs/INTERFACES.md congelado.
+  - Rust: daemon/src/interfaces.rs, mocks.rs y tests/contracts.rs.
+  - Kotlin: android/contracts/ con interfaces, mocks y pruebas.
+  - Arnes ejecutable: tools/contract_v1.py --test (8/8 OK).
+  - Compilacion Rust/Kotlin: cerrada en A3 (CI).
+
+
+============================================================
+5. PARTE COMPLETADA: A3
+============================================================
+
+Nombre: Repositorio y CI.
+
+Objetivo:
+  Dejar el proyecto listo para trabajo paralelo: estructura,
+  higiene de repositorio y CI que compile y pruebe los tres
+  frentes.
+
+Que se usa:
+  - Git (repo local en rama main, sin commit inicial).
+  - GitHub Actions sobre ubuntu-latest.
+  - Python 3.11 para los validadores.
+  - Rust stable con cargo, rustfmt y clippy.
+  - JDK 17 y Gradle 8.5 para Kotlin/JVM.
+
+Entregables:
+  - .gitignore, .gitattributes y .editorconfig.
+  - README.md en la raiz.
+  - Makefile con check, python, rust, android y clean.
+  - rust-toolchain.toml.
+  - tools/check_all.py (runner multiplataforma).
+  - .github/workflows/ci.yml con jobs python, rust y android.
+  - android/contracts/gradle.properties.
+
+Criterio de aceptacion:
+  - py tools/check_all.py pasa en local y omite Rust/Gradle si
+    no estan instalados.
+  - La CI ejecuta protocolo, vectores, contratos, cargo
+    test/clippy y gradle test en cada push y pull request.
+  - Un cambio de capa no obliga a tocar las demas.
+
+Estado de A3 (2026-11-02):
+  - Repo git inicializado en rama main, sin commit.
+  - py tools/check_all.py: Python OK (5 vectores y 8 pruebas de
+    contrato); Rust y Gradle omitidos por no estar instalados en
+    esta maquina.
+  - La verificacion real de Rust y Kotlin queda a cargo de la CI.
+
+
+============================================================
+6. PARTE COMPLETADA: B1
+============================================================
+
+Nombre: UI y captura tactil (Android).
+
+Objetivo:
+  Layout Xbox en horizontal, multitouch, zonas muertas y captura
+  sin batching, emitiendo InputEvent contra los contratos de A2.
+
+Que se usa:
+  - Kotlin, View custom con Canvas.
+  - MotionEvent, requestUnbufferedDispatch, eventos historicos.
+  - Buffer reutilizable y arreglos de punteros 0..31.
+
+Entregables:
+  - android/ui-core: geometria, hit-test, zona muerta y emision
+    de eventos (logica pura, sin SDK).
+  - android/app: APK con MainActivity y XboxControllerView.
+  - Pruebas JVM de 10 dedos, mismo boton con dos dedos, Y del
+    protocolo, cruceta diagonal, touchpad, gatillos, cancelacion
+    y rendimiento.
+  - CI: job android-ui (gradle test) y android-app (assembleDebug).
+
+Criterio de aceptacion:
+  - 10 dedos simultaneos.
+  - Menos de 5 ms de procesamiento por evento.
+  - Sin asignaciones en el hot path salvo el InputEvent del
+    contrato.
+
+Estado de B1 (2026-11-03):
+  - Codigo y pruebas escritos.
+  - Verificado en local: gradle test (8/8) y assembleDebug OK con
+    JDK 17 y Android SDK 34.
+  - Pendiente de hardware: probar el APK en el Edge 30 (10 dedos
+    reales y respuesta tactil).
+
+
+============================================================
+7. PARTE COMPLETADA: B2
+============================================================
+
+Nombre: Transporte AOA (Android).
+
+Objetivo:
+  Implementar el contrato Transport de A2 sobre el accesorio USB
+  que Android expone tras el handshake AOA del host. Enviar tramas
+  de 64 bytes a 1000 Hz y reconectar solo al volver el cable.
+
+Que se usa:
+  - UsbManager, UsbAccessory y el descriptor de openAccessory.
+  - FileInputStream/FileOutputStream sobre los endpoints bulk.
+  - Hilo lector dedicado, cola circular y reensamblado de tramas.
+  - Receptor de USB_ACCESSORY_ATTACHED/DETACHED y permiso USB.
+
+Entregables:
+  - android/transport: AoaTransport, FrameAssembler y FrameRing.
+  - AoaIdentity y accessory_filter.xml con las cadenas del host.
+  - Pruebas JVM de cola y reensamblado.
+  - CI: job android-transport (testDebugUnitTest).
+
+Criterio de aceptacion:
+  - 1000 Hz sostenidos.
+  - Sin GC en el hilo de envio (write no asigna por trama).
+  - Reconexion automatica al reconectar el cable.
+
+Estado de B2 (2026-11-03):
+  - Codigo y pruebas escritos.
+  - Verificado en local: testDebugUnitTest (9/9) y assembleDebug OK
+    con JDK 17 y Android SDK 34.
+  - Pendiente de hardware: handshake real con la PC y medicion de
+    frecuencia/reconexion en el Edge 30.
+
+
+============================================================
+8. PARTE COMPLETADA: B3
+============================================================
+
+Nombre: Servicio, identidad y slots (Android).
+
+Objetivo:
+  Foreground service con wakelock, UUID persistente, seleccion de
+  jugador, HELLO/HELLO_ACK y envio de INPUT a la tasa configurada.
+
+Que se usa:
+  - ForegroundService y notificacion persistente.
+  - PowerManager.WakeLock.
+  - SharedPreferences para UUID y slot pedido.
+  - AoaTransport de B2 y TouchPadController de B1.
+
+Entregables:
+  - android/session: FrameCodec, SessionEngine, Identity y pruebas.
+  - android/app: MandoService, MandoRuntime y
+    PreferencesIdentityStore.
+  - HELLO, espera de HELLO_ACK, PING/PONG, RUMBLE y BYE.
+  - Overlay de estado y selector de slot (AUTO/1..4).
+  - Pruebas de identidad/sesion y reconexion.
+
+Criterio de aceptacion:
+  - Sobrevive 1 h en primer plano.
+  - Se reconecta solo.
+  - No duplica el UUID.
+
+Estado de B3 (2026-11-03):
+  - Codigo y pruebas escritos.
+  - Verificado en local: gradle test (33/33) en android/session y
+    assembleDebug OK con JDK 21 y Android SDK 34.
+  - Pendiente de hardware: 1 h en primer plano, notificacion,
+    wakelock y handshake real con la PC en el Edge 30.
+
+
+============================================================
+9. HITOS
+============================================================
+
+M0 (contrato):      A1 + A2 + A3
+M1 (un jugador):    B2 + C1 + C2 + D1
+M2 (dos jugadores): B3 + C3
+M3 (producto):      B1 + C4 + D2 + D3
+M4 (entrega):       E1 + E2
+
+
+============================================================
+10. DEFINICION DE TERMINADO GLOBAL
+============================================================
+
+  - 4 jugadores, 30 minutos, sin desconexiones.
+  - Latencia medida y mostrada por jugador.
+  - Slots estables al reconectar.
+  - Instalacion en Fedora limpia siguiendo la guia.
+  - Documentacion de troubleshooting.
+
+============================================================
+FIN DEL PLAN
+============================================================

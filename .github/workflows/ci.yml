@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (protocolo y contratos)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Protocolo
+        run: python tools/protocol_v1.py --selftest
+      - name: Vectores del documento
+        run: python tools/check_doc.py
+      - name: Contratos
+        run: python tools/contract_v1.py --test
+
+  rust:
+    name: Rust (daemon)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      - name: Formato (informativo)
+        run: cargo fmt --all -- --check
+        continue-on-error: true
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Pruebas
+        run: cargo test --all-targets
+
+  android:
+    name: Kotlin (contratos)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android/contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.5"
+      - name: Pruebas
+        run: gradle --no-daemon test
+
+  android-ui:
+    name: Kotlin (UI core B1)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android/ui-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.5"
+      - name: Pruebas UI
+        run: gradle --no-daemon test
+
+  android-session:
+    name: Kotlin (sesion B3)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android/session
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.5"
+      - name: Pruebas de sesion
+        run: gradle --no-daemon test
+
+  android-transport:
+    name: Android (transporte AOA B2)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android/transport
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: SDK 34
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.5"
+      - name: Pruebas de transporte
+        run: gradle --no-daemon testDebugUnitTest
+
+  android-app:
+    name: Android (APK B3)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android/app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: SDK 34
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.5"
+      - name: Compilar APK
+        run: gradle --no-daemon assembleDebug
